@@ -35,6 +35,7 @@ def calculate_loss_gradient(model, model_input, grad_input, y, target_label):
 ####################################################################################################
 
 
+
 ####################################################################################################
 # [MI] configures MI only when M is provided, and sets decay rate via the mu parameter
 def apply_mi(attack_type, mu):
@@ -44,10 +45,13 @@ def apply_mi(attack_type, mu):
 
 # [MI] accumulates the current gradient (ghat) into momentum (g)
 def update_mi_momentum(g, ghat, mu):
-    # TODO 1: Momentum Iterative
-    normalized_ghat = ghat / torch.sum(torch.abs(ghat), dim=[1, 2, 3], keepdim=True)
+    # TODO 1
+    # Division by zero 방지를 위해 1e-12 추가
+    l1_norm = torch.sum(torch.abs(ghat), dim=[1, 2, 3], keepdim=True) + 1e-12
+    normalized_ghat = ghat / l1_norm
     return mu * g + normalized_ghat
 ####################################################################################################
+
 
 
 ####################################################################################################
@@ -59,7 +63,7 @@ def apply_di(x_adv, attack_type, di_prob, di_pad_amount, di_pad_value):
 
 # [DI] Implementing diverse input (resize & padding) 
 def diverse_input(x_adv, di_prob, di_pad_amount, di_pad_value):
-    # TODO 2: Diverse Input
+    # TODO 2
     x_di = x_adv
     ori_size = x_di.shape[-1]
     
@@ -78,13 +82,14 @@ def diverse_input(x_adv, di_prob, di_pad_amount, di_pad_value):
     cond = torch.rand(x_adv.shape[0], device=x_adv.device) < di_prob
     cond = cond.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
     x_di = torch.where(cond, x_di, x_adv)
+    
     return x_di
 ####################################################################################################
 
 
+
 ####################################################################################################
 # [TI] configures TI only when T is provided 
-# (FYI. ti_conv is a smoothed gradient generated via the create_ti_conv function.)
 def apply_ti(ghat, attack_type, ti_conv):
     if 'T' in attack_type:
         return ti_conv(ghat)
@@ -93,7 +98,7 @@ def apply_ti(ghat, attack_type, ti_conv):
 # [TI] creating Gaussian kernel
 def gkern(kernlen=7, nsig=3):
     """Returns a 2D Gaussian kernel array."""
-    # TODO 3: Gaussian Kernel for TI
+    # TODO 3
     x = np.linspace(-nsig, nsig, kernlen)
     kern1d = st.norm.pdf(x)
     kernel_raw = np.outer(kern1d, kern1d)
@@ -114,6 +119,7 @@ def create_ti_conv(device, ti_kernel_size):
 ####################################################################################################
 
 
+
 ####################################################################################################
 # [SI] configures SI only when S is provided
 def apply_si(model, x_adv_or_nes, y, number_of_si_scales, target_label, attack_type, di_prob, di_pad_amount,
@@ -126,7 +132,7 @@ def apply_si(model, x_adv_or_nes, y, number_of_si_scales, target_label, attack_t
 # [SI] accumulates gradients across multi-scale inputs (SI), with optional Diverse Input (DI) support via apply_di
 def calculate_si_ghat(model, x_adv_or_nes, y, number_of_si_scales, target_label, 
                       attack_type, di_prob, di_pad_amount, di_pad_value):
-    # TODO 4: Scale-Invariant FGSM
+    # TODO 4
     grad_sum = 0
     for si_counter in range(number_of_si_scales):
         si_div = 2 ** si_counter
@@ -139,17 +145,24 @@ def calculate_si_ghat(model, x_adv_or_nes, y, number_of_si_scales, target_label,
         grad = calculate_loss_gradient(model, si_input2, si_input, y, target_label)
         grad_sum += grad / si_div
         
-    return grad_sum
+    # PDF 알고리즘 1에 명시된 부분(Get average gradients) 반영 
+    return grad_sum / number_of_si_scales
 ####################################################################################################
+
 
 
 ####################################################################################################
 # [NI] configures NI only when N is provided, and prepares the look-ahead input tensor
 def apply_ni(attack_type, x_adv, alpha, mu, g):
-    # TODO 5: Nesterov Iterative Look-ahead
+    # TODO 5
     if 'N' in attack_type:
-        x_nes = x_adv + alpha * mu * g
+        # 첫 번째 iteration에서 g가 0(int)인 경우 텐서 연산 이슈 방지
+        if isinstance(g, int) and g == 0:
+            x_nes = x_adv.detach()
+        else:
+            x_nes = x_adv + alpha * mu * g
         return prepare_attack_input(x_nes)
+    
     return prepare_attack_input(x_adv)
 
 def apply_ni_decay(attack_type, mu):
@@ -159,12 +172,13 @@ def apply_ni_decay(attack_type, mu):
 ####################################################################################################
 
 
+
 ####################################################################################################
 # TODO 6 (recommend): Tune `mu`, `number_of_si_scales`, `di_prob`, `di_pad_amount`, `di_pad_value`, and `ti_kernel_size`.
 # Do not change : num_iter, max_epsilon, step_size, target_label, constraint_img, and every_step_controller.
 def mi_ditisi_fgsm_core(attack_type, model, x, y, target_label=-1, num_iter=100, max_epsilon=8, step_size=0.7,
-                        mu=1.0, number_of_si_scales=5, constraint_img=None, di_prob=0.5, di_pad_amount=31,
-                        di_pad_value=0, ti_kernel_size=15, every_step_controller=None):
+                        mu=1.0, number_of_si_scales=10, constraint_img=None, di_prob=0.5, di_pad_amount=31,
+                        di_pad_value=0, ti_kernel_size=7, every_step_controller=None):
     """
     Args:
         attack_type: string containing optional flags such as
