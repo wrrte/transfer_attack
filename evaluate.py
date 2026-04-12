@@ -12,6 +12,7 @@ import numpy as np
 from PIL import Image
 import local_configuration
 import itertools
+from tqdm.auto import tqdm  # 진행률 바 출력을 위해 추가
 
 from basic_attack_core import (
     fgsm,
@@ -44,7 +45,7 @@ def main(args):
 
     batch_size = args.batch_size
     
-    # 탐색할 하이퍼파라미터 공간 (PDF의 권장 수정 항목)
+    # 탐색할 하이퍼파라미터 공간
     search_space = {
         'number_of_si_scales': [5, 10, 15],
         'ti_kernel_size': [7, 15],
@@ -57,9 +58,9 @@ def main(args):
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*search_space.values())]
 
     for model_i, source_model_name in enumerate(source_model_names):
-        print(source_model_name)
+        print(f"\n{source_model_name} Target Loaded")
         
-        # load models (모델 로드는 반복문 밖에서 1번만 수행하여 시간 단축)
+        # load models 
         source_model = WrapperModel(load_model(source_model_name), mean, stddev).to(device)
         source_model = source_model.eval()
 
@@ -72,7 +73,6 @@ def main(args):
             print(f"=======================================================")
             torch.cuda.empty_cache()
 
-            # 현재 하이퍼파라미터를 kwargs로 전달하도록 래핑
             def current_atk(model, img, label):
                 return mni_ditisi_fgsm(model, img, label, **hyperparams)
 
@@ -84,7 +84,9 @@ def main(args):
                 dl = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True)
                 target_accs = {m: {k: 0. for k in attack_methods.keys()} for m in transfer_model_names}
                 num_images = 0
-                for i, data in enumerate(dl):
+                
+                # tqdm을 적용하여 진행바 출력 (leave=False로 설정하여 완료 후 깔끔하게 지워짐)
+                for i, data in enumerate(tqdm(dl, desc="  Batch Progress", leave=False)):
                     num_images += data[1].shape[0]
 
                     img, label = data
@@ -171,9 +173,9 @@ def main(args):
             print(f"-> final_score : {final_score:.2f}")
 
             # 목표 점수 달성 시 루프 탈출
-            if final_score > 95.0:
+            if final_score >= 95.0:
                 print("\n" + "*"*60)
-                print(f"!!! SUCCESS: Found parameters with final_score ({final_score:.2f}) > 95 !!!")
+                print(f"!!! SUCCESS: Found parameters with final_score ({final_score:.2f}) >= 95 !!!")
                 print(f"Optimal Hyperparameters: {hyperparams}")
                 print("*"*60 + "\n")
                 found_optimal = True
