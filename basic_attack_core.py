@@ -35,7 +35,6 @@ def calculate_loss_gradient(model, model_input, grad_input, y, target_label):
 ####################################################################################################
 
 
-
 ####################################################################################################
 # [MI] configures MI only when M is provided, and sets decay rate via the mu parameter
 def apply_mi(attack_type, mu):
@@ -45,17 +44,10 @@ def apply_mi(attack_type, mu):
 
 # [MI] accumulates the current gradient (ghat) into momentum (g)
 def update_mi_momentum(g, ghat, mu):
-    # TODO 1
-    # Hint
-    # Momentum should accumulate information across iterations instead of using only the current step.
-    # First normalize `ghat` for each sample so its scale does not dominate the update.
-    # Then combine the previous momentum `g` and the normalized gradient using the decay factor `mu`.
-    # The returned tensor is the running direction that will be used to update `x_adv`.
-
-    # [The code below is a basic version, so it should be modified.]
-    return mu*g + ghat/torch.sum(torch.abs(ghat), dim=[1, 2, 3], keepdim=True)
+    # TODO 1: Momentum Iterative
+    normalized_ghat = ghat / torch.sum(torch.abs(ghat), dim=[1, 2, 3], keepdim=True)
+    return mu * g + normalized_ghat
 ####################################################################################################
-
 
 
 ####################################################################################################
@@ -67,18 +59,27 @@ def apply_di(x_adv, attack_type, di_prob, di_pad_amount, di_pad_value):
 
 # [DI] Implementing diverse input (resize & padding) 
 def diverse_input(x_adv, di_prob, di_pad_amount, di_pad_value):
-    # TODO 2
-    # Hint 
-    # Diverse Input applies a random spatial transform before the forward pass.
-    # A standard version resizes the image to a random larger size, pads it at random offsets,
-    # resizes it back to the original resolution, and keeps the batch shape unchanged.
-    # This transformed input should be used only with probability `di_prob`
-
-    # [The code below is a basic version, so it should be modified.]
+    # TODO 2: Diverse Input
     x_di = x_adv
+    ori_size = x_di.shape[-1]
+    
+    rnd = int(torch.rand(1) * di_pad_amount) + ori_size
+    x_di = transforms.Resize((rnd, rnd), interpolation=InterpolationMode.NEAREST)(x_di)
+    
+    pad_max = ori_size + di_pad_amount - rnd
+    pad_left = int(torch.rand(1) * pad_max)
+    pad_right = pad_max - pad_left
+    pad_top = int(torch.rand(1) * pad_max)
+    pad_bottom = pad_max - pad_top
+    
+    x_di = F.pad(x_di, (pad_left, pad_right, pad_top, pad_bottom), 'constant', di_pad_value)
+    x_di = transforms.Resize((ori_size, ori_size), interpolation=InterpolationMode.NEAREST)(x_di)
+    
+    cond = torch.rand(x_adv.shape[0], device=x_adv.device) < di_prob
+    cond = cond.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+    x_di = torch.where(cond, x_di, x_adv)
     return x_di
 ####################################################################################################
-
 
 
 ####################################################################################################
@@ -92,17 +93,11 @@ def apply_ti(ghat, attack_type, ti_conv):
 # [TI] creating Gaussian kernel
 def gkern(kernlen=7, nsig=3):
     """Returns a 2D Gaussian kernel array."""
-    # TODO 3
-    # Hint 
-    # This function should build the Gaussian filter used for translation-invariant smoothing.
-    # Create 1D coordinates from `-nsig` to `nsig`, convert them into Gaussian weights,
-    # and form a 2D kernel by taking the outer product of the 1D vector with itself.
-    # Finally, normalize the kernel so that all entries sum to 1,
-    # because the convolution should smooth the gradient without changing its overall scale too much.
-
-    # [The code below is a basic version, so it should be modified.] keeping a valid kernel whose center is 1 so TI becomes an identity operation.
-    kernel = np.zeros((kernlen, kernlen), dtype=np.float32)
-    kernel[kernlen // 2, kernlen // 2] = 1.0
+    # TODO 3: Gaussian Kernel for TI
+    x = np.linspace(-nsig, nsig, kernlen)
+    kern1d = st.norm.pdf(x)
+    kernel_raw = np.outer(kern1d, kern1d)
+    kernel = kernel_raw / kernel_raw.sum()
     return kernel
 
 # [TI] preparing depthwise convolution
@@ -119,7 +114,6 @@ def create_ti_conv(device, ti_kernel_size):
 ####################################################################################################
 
 
-
 ####################################################################################################
 # [SI] configures SI only when S is provided
 def apply_si(model, x_adv_or_nes, y, number_of_si_scales, target_label, attack_type, di_prob, di_pad_amount,
@@ -132,35 +126,30 @@ def apply_si(model, x_adv_or_nes, y, number_of_si_scales, target_label, attack_t
 # [SI] accumulates gradients across multi-scale inputs (SI), with optional Diverse Input (DI) support via apply_di
 def calculate_si_ghat(model, x_adv_or_nes, y, number_of_si_scales, target_label, 
                       attack_type, di_prob, di_pad_amount, di_pad_value):
-    # TODO 4
-    # Hint 
-    # Scale-Invariant FGSM sums gradients from multiple scaled copies of the current adversarial input.
-    # For each scale, divide the input by `2 ** si_counter`, enable gradients on that scaled tensor,
-    
-    # optionally pass it through DI like below.
-    # si_input2 = apply_di(si_input, attack_type, di_prob, di_pad_amount, di_pad_value)
-
-    # And compute the loss gradient with respect to the scaled input. 
-    # Add each gradient to `grad_sum` with the corresponding `1 / si_div` weight,
-    # and return the accumulated result as the final `ghat`.
-
-    # [The code below is a basic version, so it should be modified.] using the base gradient so the basic version stays I-FGSM-like.
-    ghat = calculate_loss_gradient(model, x_adv_or_nes, x_adv_or_nes, y, target_label)
-    return ghat
+    # TODO 4: Scale-Invariant FGSM
+    grad_sum = 0
+    for si_counter in range(number_of_si_scales):
+        si_div = 2 ** si_counter
+        si_input = x_adv_or_nes / si_div
+        si_input = si_input.detach()
+        si_input.requires_grad = True
+        
+        si_input2 = apply_di(si_input, attack_type, di_prob, di_pad_amount, di_pad_value)
+        
+        grad = calculate_loss_gradient(model, si_input2, si_input, y, target_label)
+        grad_sum += grad / si_div
+        
+    return grad_sum
 ####################################################################################################
-
 
 
 ####################################################################################################
 # [NI] configures NI only when N is provided, and prepares the look-ahead input tensor
 def apply_ni(attack_type, x_adv, alpha, mu, g):
-    # TODO 5
-    # Hint
-    # NI should compute gradients at a look-ahead point.
-    # and then enable gradients on that tensor.
-    # When 'N' is not in attack_type, return the usual prepared input.
-
-    # [The code below is a basic version, so it should be modified.] keeping NI path as baseline behavior.
+    # TODO 5: Nesterov Iterative Look-ahead
+    if 'N' in attack_type:
+        x_nes = x_adv + alpha * mu * g
+        return prepare_attack_input(x_nes)
     return prepare_attack_input(x_adv)
 
 def apply_ni_decay(attack_type, mu):
@@ -170,13 +159,12 @@ def apply_ni_decay(attack_type, mu):
 ####################################################################################################
 
 
-
 ####################################################################################################
 # TODO 6 (recommend): Tune `mu`, `number_of_si_scales`, `di_prob`, `di_pad_amount`, `di_pad_value`, and `ti_kernel_size`.
 # Do not change : num_iter, max_epsilon, step_size, target_label, constraint_img, and every_step_controller.
 def mi_ditisi_fgsm_core(attack_type, model, x, y, target_label=-1, num_iter=100, max_epsilon=8, step_size=0.7,
-                        mu=1.0, number_of_si_scales=10, constraint_img=None, di_prob=0.5, di_pad_amount=31,
-                        di_pad_value=0, ti_kernel_size=7, every_step_controller=None):
+                        mu=1.0, number_of_si_scales=5, constraint_img=None, di_prob=0.5, di_pad_amount=31,
+                        di_pad_value=0, ti_kernel_size=15, every_step_controller=None):
     """
     Args:
         attack_type: string containing optional flags such as
