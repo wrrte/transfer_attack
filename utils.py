@@ -210,7 +210,8 @@ def freq_aug(inputs, epsilon):
     rho = 0.5  # tuning factor
 
     gauss = torch.randn(inputs.shape) * (sigma / 255)
-    gauss = gauss.cuda()
+    # M1 GPU 지원을 위해 하드코딩된 .cuda() 대신 inputs의 device를 따르도록 수정
+    gauss = gauss.to(inputs.device)
 
     dct = dct_2d(inputs + gauss)
     mask = (torch.rand_like(inputs) * 2 * rho + 1 - rho)

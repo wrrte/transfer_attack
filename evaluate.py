@@ -33,7 +33,14 @@ def main(args):
     source_model_names = ['ResNet50']
     source_model_names = source_model_names[args.start:args.end]
     transfer_model_names = [x for x in all_model_names]
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # M1 Mac(Apple Silicon) GPU를 위한 mps 지원 로직 추가
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
 
     # pre-process input image
     mean, stddev = [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
