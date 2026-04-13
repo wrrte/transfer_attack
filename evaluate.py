@@ -68,7 +68,7 @@ def main(args):
     search_space = {
         'number_of_si_scales': [10, 15],  
         'ti_kernel_size': [5, 7],         
-        'di_prob': [0.7, 0.8, 0.9],       
+        'di_prob': [0.8, 0.9],       
         'di_pad_amount': [31, 40],        
         'mu': [1.0, 1.1]                  
     }
@@ -79,8 +79,9 @@ def main(args):
 
     # 건너뛸 두 가지 세팅 정의
     skip_configs = [
-        {'number_of_si_scales': 10, 'ti_kernel_size': 5, 'di_prob': 0.7, 'di_pad_amount': 31, 'mu': 1.0},
-        {'number_of_si_scales': 10, 'ti_kernel_size': 5, 'di_prob': 0.7, 'di_pad_amount': 31, 'mu': 1.1}
+        {'number_of_si_scales': 10, 'ti_kernel_size': 5, 'di_prob': 0.8, 'di_pad_amount': 31, 'mu': 1.0},
+        {'number_of_si_scales': 10, 'ti_kernel_size': 5, 'di_prob': 0.8, 'di_pad_amount': 31, 'mu': 1.1},
+        {'number_of_si_scales': 10, 'ti_kernel_size': 5, 'di_prob': 0.8, 'di_pad_amount': 40, 'mu': 1.0}
     ]
 
     for model_i, source_model_name in enumerate(source_model_names):
