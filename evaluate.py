@@ -46,11 +46,13 @@ def main(args):
     batch_size = args.batch_size
     
     # 탐색할 하이퍼파라미터 공간
+    # 로그의 경향성을 반영하여 95점 돌파를 위해 압축한 탐색 공간
     search_space = {
-        'number_of_si_scales': [5, 10, 15],
-        'ti_kernel_size': [7, 15],
-        'di_prob': [0.5, 0.7],
-        'di_pad_amount': [15, 31]
+        'number_of_si_scales': [10, 15],  # 5는 성능이 떨어지므로 제외하고 더 높은 15 추가
+        'ti_kernel_size': [5, 7],         # 15는 폭락하므로 제외, 7 주변 탐색
+        'di_prob': [0.7, 0.8, 0.9],       # 0.5보다 0.7이 좋았으므로 더 올려봄
+        'di_pad_amount': [31, 40],        # 큰 값이 좋으므로 15 제외, 40 추가
+        'mu': [1.0, 1.1]                  # 공지에서 허용된 mu 값 미세조정 추가
     }
     
     keys = list(search_space.keys())
