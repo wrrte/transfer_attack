@@ -11,6 +11,9 @@ import argparse
 import numpy as np
 from PIL import Image
 import local_configuration
+import itertools
+from tqdm.auto import tqdm  # 진행률 바 출력을 위해 추가
+
 from basic_attack_core import (
     fgsm,
     i_fgsm,
@@ -40,139 +43,148 @@ def main(args):
     # Create Dataset
     dataset = create_dataset(transform, num_images=args.num_images)
 
-
     batch_size = args.batch_size
-    for model_i, source_model_name in enumerate(source_model_names):
-        print(source_model_name)
-        torch.cuda.empty_cache()
+    
+    # 탐색할 하이퍼파라미터 공간
+    # 로그의 경향성을 반영하여 95점 돌파를 위해 압축한 탐색 공간
+    search_space = {
+        'number_of_si_scales': [10, 15],  # 5는 성능이 떨어지므로 제외하고 더 높은 15 추가
+        'ti_kernel_size': [5, 7],         # 15는 폭락하므로 제외, 7 주변 탐색
+        'di_prob': [0.7, 0.8, 0.9],       # 0.5보다 0.7이 좋았으므로 더 올려봄
+        'di_pad_amount': [31, 40],        # 큰 값이 좋으므로 15 제외, 40 추가
+        'mu': [1.0, 1.1]                  # 공지에서 허용된 mu 값 미세조정 추가
+    }
+    
+    keys = list(search_space.keys())
+    # 가능한 모든 조합 생성
+    param_combinations = [dict(zip(keys, v)) for v in itertools.product(*search_space.values())]
 
-        # load models
+    for model_i, source_model_name in enumerate(source_model_names):
+        print(f"\n{source_model_name} Target Loaded")
+        
+        # load models 
         source_model = WrapperModel(load_model(source_model_name), mean, stddev).to(device)
         source_model = source_model.eval()
 
-        # Attack and Save images
-        attack_methods = {
-        # "FGSM": fgsm,
-        # "I-FGSM": i_fgsm,
-        # "MI": mi_fgsm,
-        # "MI-DI": mi_di_fgsm,
-        # "MI-DS": mi_disi_fgsm,
-        # "MI-TI": mi_ti_fgsm,
-        # "MI-SI": mi_si_fgsm,
-        # "MI-DTS": mi_ditisi_fgsm,
-        "MNI-DTS": mni_ditisi_fgsm,
-         }
+        found_optimal = False
 
-        def iter_source():
-            print("batch: ", batch_size)
-            dl = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True)
-            target_accs = {m: {k: 0. for k in attack_methods.keys()} for m in transfer_model_names}
-            num_images = 0
-            for i, data in enumerate(dl):
-                num_images += data[1].shape[0]
+        # --- 하이퍼파라미터 탐색 루프 시작 ---
+        for config_idx, hyperparams in enumerate(param_combinations):
+            print(f"\n=======================================================")
+            print(f"[{config_idx+1}/{len(param_combinations)}] Testing Hyperparameters: {hyperparams}")
+            print(f"=======================================================")
+            torch.cuda.empty_cache()
 
-                img, label = data
-                img = img.to(device)
-                label = label.to(device)
+            def current_atk(model, img, label):
+                return mni_ditisi_fgsm(model, img, label, **hyperparams)
 
-                source_model.eval()
-                output_dict = {key: atk(source_model, img, label,) for key, atk in
-                               attack_methods.items()}
+            attack_methods = {
+                "MNI-DTS": current_atk,
+            }
 
-                if args.save_images:
-                    img_dir = local_configuration.output_image / source_model_name / "ori"
-                    os.makedirs(img_dir, exist_ok=True)
-                    for ii in range(img.shape[0]):
-                        ori_vis = ((img[ii].detach().cpu() + 1) / 2).clamp(0, 1)
-                        Image.fromarray(np.uint8(ori_vis.permute(1, 2, 0) * 255)).save(
-                            img_dir / f"ori_{i*batch_size+ii:04d}.png")
-                for a in attack_methods.keys():
+            def iter_source():
+                dl = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True)
+                target_accs = {m: {k: 0. for k in attack_methods.keys()} for m in transfer_model_names}
+                num_images = 0
+                
+                # tqdm을 적용하여 진행바 출력 (leave=False로 설정하여 완료 후 깔끔하게 지워짐)
+                for i, data in enumerate(tqdm(dl, desc="  Batch Progress", leave=False)):
+                    num_images += data[1].shape[0]
+
+                    img, label = data
+                    img = img.to(device)
+                    label = label.to(device)
+
+                    source_model.eval()
+                    output_dict = {key: atk(source_model, img, label) for key, atk in attack_methods.items()}
+
                     if args.save_images:
-                        img_dir = local_configuration.output_image / source_model_name / f"{str(a)}"
+                        img_dir = local_configuration.output_image / source_model_name / "ori"
                         os.makedirs(img_dir, exist_ok=True)
                         for ii in range(img.shape[0]):
-                            Image.fromarray(
-                                np.uint8(((output_dict[a] + 1) / 2)[ii].permute(1, 2, 0).cpu() * 255)).save(
-                                img_dir / f"{str(a)}_{i*batch_size+ii:04d}.png")
-
-                # get labels for transfer
-                for j, mod in enumerate(transfer_models):
-                    mod.eval()
-                    with torch.no_grad():
-                        transfer_results_dict = {key: F.softmax(mod(value), dim=1).max(dim=1) for key, value in
-                                                 output_dict.items()}
+                            ori_vis = ((img[ii].detach().cpu() + 1) / 2).clamp(0, 1)
+                            Image.fromarray(np.uint8(ori_vis.permute(1, 2, 0) * 255)).save(
+                                img_dir / f"ori_{i*batch_size+ii:04d}.png")
                     for a in attack_methods.keys():
-                        target_accs[transfer_model_names[j]][a] += (
-                            torch.sum((transfer_results_dict[a][1] == label).float())).item()
-                        acc = (target_accs[transfer_model_names[j]][a]) / num_images
-                        print(f'[{i + 1}/{len(dl)}] SR (%) on {transfer_model_names[j]} with {a} : '
-                              f'{100 - acc * 100:.2f}')
-            return target_accs
+                        if args.save_images:
+                            img_dir = local_configuration.output_image / source_model_name / f"{str(a)}"
+                            os.makedirs(img_dir, exist_ok=True)
+                            for ii in range(img.shape[0]):
+                                Image.fromarray(
+                                    np.uint8(((output_dict[a] + 1) / 2)[ii].permute(1, 2, 0).cpu() * 255)).save(
+                                    img_dir / f"{str(a)}_{i*batch_size+ii:04d}.png")
 
-        target_accs = iter_source()
+                    # get labels for transfer
+                    for j, mod in enumerate(transfer_models):
+                        mod.eval()
+                        with torch.no_grad():
+                            transfer_results_dict = {key: F.softmax(mod(value), dim=1).max(dim=1) for key, value in output_dict.items()}
+                        for a in attack_methods.keys():
+                            target_accs[transfer_model_names[j]][a] += (
+                                torch.sum((transfer_results_dict[a][1] == label).float())).item()
+                            
+                return target_accs
 
-        # final accuracy and scoring
-        sr_values = {}
-        for attack_name in attack_methods.keys():
-            for j, mod in enumerate(transfer_models):
-                model_name = transfer_model_names[j]
-                acc = (target_accs[model_name][attack_name]) / len(dataset)
-                sr = 100.0 - acc * 100.0
-                if model_name not in sr_values:
-                    sr_values[model_name] = {}
-                sr_values[model_name][attack_name] = sr
-                print(f'Final SR (%) on {model_name} with {attack_name} : {sr:.2f}')
+            target_accs = iter_source()
 
-        robust_model_names = {
-            "DenseNet121",
-            "inception_v4_timm",
-            "adv_inception_v3",
-        }
-
-        white_box_srs = []
-        if source_model_name in sr_values:
+            # final accuracy and scoring
+            sr_values = {}
             for attack_name in attack_methods.keys():
-                white_box_srs.append(sr_values[source_model_name][attack_name])
-            white_box_score = sum(white_box_srs) / float(len(white_box_srs))
-        else:
-            white_box_score = 0.0
+                for j, mod in enumerate(transfer_models):
+                    model_name = transfer_model_names[j]
+                    acc = (target_accs[model_name][attack_name]) / len(dataset)
+                    sr = 100.0 - acc * 100.0
+                    if model_name not in sr_values:
+                        sr_values[model_name] = {}
+                    sr_values[model_name][attack_name] = sr
 
-        weighted_sum = 0.0
-        weight_total = 0.0
-        for attack_name in attack_methods.keys():
-            for model_name in transfer_model_names:
-                if model_name == source_model_name:
-                    continue
-                sr = sr_values[model_name][attack_name]
-                weight = 2.0 if model_name in robust_model_names else 1.0
-                weighted_sum += sr * weight
-                weight_total += weight
+            robust_model_names = {
+                "DenseNet121",
+                "inception_v4_timm",
+                "adv_inception_v3",
+            }
 
-        if weight_total > 0.0:
-            weighted_transfer_score = weighted_sum / weight_total
-        else:
-            weighted_transfer_score = 0.0
+            white_box_srs = []
+            if source_model_name in sr_values:
+                for attack_name in attack_methods.keys():
+                    white_box_srs.append(sr_values[source_model_name][attack_name])
+                white_box_score = sum(white_box_srs) / float(len(white_box_srs))
+            else:
+                white_box_score = 0.0
 
-        alpha = 0.4
-        beta = 0.6
-        final_score = alpha * white_box_score + beta * weighted_transfer_score
+            weighted_sum = 0.0
+            weight_total = 0.0
+            for attack_name in attack_methods.keys():
+                for model_name in transfer_model_names:
+                    if model_name == source_model_name:
+                        continue
+                    sr = sr_values[model_name][attack_name]
+                    weight = 2.0 if model_name in robust_model_names else 1.0
+                    weighted_sum += sr * weight
+                    weight_total += weight
 
-        print(f"White-box SR score on {source_model_name} (avg over attacks): {white_box_score:.2f}")
-        print(f"Transfer SR score (weighted by robustness): {weighted_transfer_score:.2f}")
-        print(f"final_score : {final_score:.2f}")
+            if weight_total > 0.0:
+                weighted_transfer_score = weighted_sum / weight_total
+            else:
+                weighted_transfer_score = 0.0
 
-        # store per-source final score for later overall averaging
-        if "per_source_final_scores" not in globals():
-            global per_source_final_scores  # global dict to collect scores
-            per_source_final_scores = {}
-        per_source_final_scores[source_model_name] = final_score  # save score for this source
+            alpha = 0.4
+            beta = 0.6
+            final_score = alpha * white_box_score + beta * weighted_transfer_score
 
-    # # compute eval_final_score after processing all source models (added)
-    # if "per_source_final_scores" in globals() and len(per_source_final_scores) > 0:
-    #     scores = list(per_source_final_scores.values())
-    #     eval_final_score = sum(scores) / float(len(scores))
-    #     print("eval_final_score : {:.2f}".format(eval_final_score))
+            print(f"-> final_score : {final_score:.2f}")
 
+            # 목표 점수 달성 시 루프 탈출
+            if final_score >= 95.0:
+                print("\n" + "*"*60)
+                print(f"!!! SUCCESS: Found parameters with final_score ({final_score:.2f}) >= 95 !!!")
+                print(f"Optimal Hyperparameters: {hyperparams}")
+                print("*"*60 + "\n")
+                found_optimal = True
+                break
+        
+        if found_optimal:
+            break
 
 def argument_parsing():
     parser = argparse.ArgumentParser()
@@ -183,7 +195,6 @@ def argument_parsing():
     parser.add_argument("--save_images", default=False, help="T/F")
     parser.add_argument("--excel_path", default="auto_results_seo.xlsx", help="auto_results.xlsx")
     return parser
-
 
 if __name__ == "__main__":
     args = argument_parsing().parse_args()
