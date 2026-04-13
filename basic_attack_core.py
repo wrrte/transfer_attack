@@ -177,7 +177,7 @@ def apply_ni_decay(attack_type, mu):
 # TODO 6 (recommend): Tune `mu`, `number_of_si_scales`, `di_prob`, `di_pad_amount`, `di_pad_value`, and `ti_kernel_size`.
 # Do not change : num_iter, max_epsilon, step_size, target_label, constraint_img, and every_step_controller.
 def mi_ditisi_fgsm_core(attack_type, model, x, y, target_label=-1, num_iter=100, max_epsilon=8, step_size=0.7,
-                        mu=1.1, number_of_si_scales=10, constraint_img=None, di_prob=0.7, di_pad_amount=31,
+                        mu=1.0, number_of_si_scales=10, constraint_img=None, di_prob=0.9, di_pad_amount=31,
                         di_pad_value=0, ti_kernel_size=5, every_step_controller=None):
     """
     Args:
